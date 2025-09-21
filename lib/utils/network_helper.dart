@@ -1,32 +1,22 @@
-// lib/utils/network_helper.dart
+// lib/utils/network_helper.dart - ACTUALIZADO con detección automática
 import 'dart:async';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import '../services/dynamic_ip_detector.dart'; // ← NUEVO IMPORT
 
 class NetworkHelper {
-  // IPs comunes para WSL2 y desarrollo local
-  static const List<String> COMMON_IPS = [
-    '172.17.192.1',
-    '172.17.192.179',     // IP típica WSL2
-    '172.18.0.1',         // Docker WSL2
-    '172.19.0.1',         // Docker alternativo
-    '192.168.1.3',        // IP Windows común
-    '10.0.0.1',           // Red privada
-    'localhost',          // Desarrollo local
-    '172.17.192.1',          // Loopback
-  ];
-
+  // ↓ ELIMINADO: IPs estáticas - ahora se usa detección automática
   static const int WHISPER_PORT = 8000;
   static const int ROSBRIDGE_PORT = 9090;
   static const int PING_TIMEOUT = 3; // segundos
   static const int HTTP_TIMEOUT = 5; // segundos
 
-  /// Ejecutar diagnóstico completo de red
+  /// Ejecutar diagnóstico completo de red usando detección automática
   static Future<Map<String, dynamic>> runDiagnostics() async {
     final startTime = DateTime.now();
 
-    print('🔍 Iniciando diagnóstico de red...');
+    print('🔍 Iniciando diagnóstico completo con detección automática...');
 
     final results = <String, dynamic>{
       'internet': false,
@@ -35,6 +25,7 @@ class NetworkHelper {
       'flask_port': false,
       'rosbridge_port': false,
       'diagnosis_time': 0,
+      'detection_method': 'automatic',
       'tested_ips': <String>[],
       'successful_ips': <String>[],
     };
@@ -49,36 +40,65 @@ class NetworkHelper {
         return _finalizeDiagnosis(results, startTime);
       }
 
-      // 2. Buscar servidor Whisper
-      print('🔍 Buscando servidor Whisper...');
-      final serverSearch = await _findWhisperServer();
+      // 2. ↓ NUEVO: Usar detección automática de IP
+      print('🔍 Usando detección automática de servidor Whisper...');
+      final detectedIP = await DynamicIPDetector.detectWhisperServerIP();
 
-      if (serverSearch != null) {
+      if (detectedIP != null) {
         results['server_found'] = true;
-        results['server_ip'] = serverSearch['ip'];
-        results['flask_port'] = serverSearch['flask_working'];
-        results['rosbridge_port'] = serverSearch['rosbridge_working'];
-        results['successful_ips'].add(serverSearch['ip']);
+        results['server_ip'] = detectedIP;
+        results['successful_ips'].add(detectedIP);
 
-        print('✅ Servidor encontrado en: ${serverSearch['ip']}');
+        // Verificar puertos específicos
+        results['flask_port'] = await _checkWhisperService(detectedIP, WHISPER_PORT);
+        results['rosbridge_port'] = await _checkPort(detectedIP, ROSBRIDGE_PORT);
+
+        print('✅ Servidor detectado automáticamente en: $detectedIP');
+        print('   - Whisper (puerto $WHISPER_PORT): ${results['flask_port']}');
+        print('   - RosBridge (puerto $ROSBRIDGE_PORT): ${results['rosbridge_port']}');
       } else {
-        print('❌ No se encontró servidor Whisper');
+        print('❌ No se detectó servidor Whisper automáticamente');
       }
 
-      results['tested_ips'] = COMMON_IPS;
+      // 3. ↓ NUEVO: Obtener información de diagnóstico detallado
+      final networkDiagnostics = await DynamicIPDetector.getNetworkDiagnostics();
+      results['network_diagnostics'] = networkDiagnostics;
+      results['tested_ips'] = networkDiagnostics['all_candidates'] ?? [];
 
     } catch (e) {
-      print('❌ Error en diagnóstico: $e');
+      print('❌ Error en diagnóstico automático: $e');
       results['error'] = e.toString();
     }
 
     return _finalizeDiagnosis(results, startTime);
   }
 
-  /// Verificar conexión básica a internet
+  /// Método legacy - ahora usa detección automática internamente
+  @deprecated
+  static Future<Map<String, dynamic>?> _findWhisperServer() async {
+    print('⚠️ Usando método legacy, se recomienda usar detección automática');
+
+    final detectedIP = await DynamicIPDetector.detectWhisperServerIP();
+
+    if (detectedIP != null) {
+      final flaskWorking = await _checkWhisperService(detectedIP, WHISPER_PORT);
+      final rosbridgeWorking = await _checkPort(detectedIP, ROSBRIDGE_PORT);
+
+      if (flaskWorking) {
+        return {
+          'ip': detectedIP,
+          'flask_working': true,
+          'rosbridge_working': rosbridgeWorking,
+        };
+      }
+    }
+
+    return null;
+  }
+
+  /// Verificar conexión básica a internet (sin cambios)
   static Future<bool> _checkInternet() async {
     try {
-      // Intentar conectar a Google DNS
       final result = await InternetAddress.lookup('google.com')
           .timeout(Duration(seconds: PING_TIMEOUT));
 
@@ -90,69 +110,7 @@ class NetworkHelper {
     }
   }
 
-  /// Buscar servidor Whisper en IPs comunes
-  static Future<Map<String, dynamic>?> _findWhisperServer() async {
-    for (final ip in COMMON_IPS) {
-      try {
-        print('🔍 Probando IP: $ip');
-
-        // Verificar si el host responde (ping básico)
-        final hostReachable = await _isHostReachable(ip);
-        if (!hostReachable) {
-          print('❌ $ip no responde');
-          continue;
-        }
-
-        // Verificar puerto Flask (Whisper)
-        final flaskWorking = await _checkWhisperService(ip, WHISPER_PORT);
-
-        if (flaskWorking) {
-          // También verificar Rosbridge si es posible
-          final rosbridgeWorking = await _checkPort(ip, ROSBRIDGE_PORT);
-
-          return {
-            'ip': ip,
-            'flask_working': true,
-            'rosbridge_working': rosbridgeWorking,
-          };
-        }
-
-      } catch (e) {
-        print('⚠️ Error probando $ip: $e');
-        continue;
-      }
-    }
-
-    return null;
-  }
-
-  /// Verificar si un host es alcanzable
-  static Future<bool> _isHostReachable(String host) async {
-    try {
-      // Para localhost y 127.0.0.1, asumir que son alcanzables
-      if (host == 'localhost' || host == '127.0.0.1') {
-        return true;
-      }
-
-      // Intentar resolver DNS
-      final addresses = await InternetAddress.lookup(host)
-          .timeout(Duration(seconds: 2));
-
-      return addresses.isNotEmpty;
-
-    } catch (e) {
-      // Si falla la resolución DNS, intentar conectar directamente
-      try {
-        final socket = await Socket.connect(host, 80, timeout: Duration(seconds: 2));
-        await socket.close();
-        return true;
-      } catch (e2) {
-        return false;
-      }
-    }
-  }
-
-  /// Verificar específicamente el servicio Whisper
+  /// Verificar específicamente el servicio Whisper (sin cambios)
   static Future<bool> _checkWhisperService(String host, int port) async {
     try {
       print('🎤 Verificando Whisper en $host:$port');
@@ -190,7 +148,7 @@ class NetworkHelper {
     }
   }
 
-  /// Verificar si un puerto específico está abierto
+  /// Verificar si un puerto específico está abierto (sin cambios)
   static Future<bool> _checkPort(String host, int port) async {
     try {
       final socket = await Socket.connect(
@@ -206,7 +164,7 @@ class NetworkHelper {
     }
   }
 
-  /// Finalizar diagnóstico y calcular tiempo
+  /// Finalizar diagnóstico y calcular tiempo (sin cambios)
   static Map<String, dynamic> _finalizeDiagnosis(
       Map<String, dynamic> results,
       DateTime startTime
@@ -218,39 +176,17 @@ class NetworkHelper {
     return results;
   }
 
-  /// Obtener la IP de WSL2 dinámicamente (Windows)
-  static Future<String?> getWSL2IP() async {
-    try {
-      if (!Platform.isWindows) return null;
-
-      // Intentar obtener IP de WSL2 usando comando
-      final result = await Process.run(
-        'wsl',
-        ['hostname', '-I'],
-        runInShell: true,
-      );
-
-      if (result.exitCode == 0) {
-        final output = result.stdout.toString().trim();
-        final ips = output.split(' ');
-
-        // Buscar IP en rango típico de WSL2
-        for (final ip in ips) {
-          if (ip.startsWith('172.') || ip.startsWith('192.168.')) {
-            print('🔍 IP WSL2 detectada: $ip');
-            return ip;
-          }
-        }
-      }
-
-    } catch (e) {
-      print('⚠️ Error obteniendo IP WSL2: $e');
-    }
-
-    return null;
+  /// ↓ NUEVO: Detección automática de IP del servidor Whisper
+  static Future<String?> detectWhisperServerIP() async {
+    return await DynamicIPDetector.detectWhisperServerIP();
   }
 
-  /// Test rápido de conectividad
+  /// ↓ ACTUALIZADO: Usa detección automática
+  static Future<String?> getWSL2IP() async {
+    return await DynamicIPDetector.detectWSL2IP();
+  }
+
+  /// Test rápido de conectividad (sin cambios)
   static Future<bool> quickConnectivityTest(String host, int port) async {
     try {
       final response = await http.get(
@@ -265,28 +201,116 @@ class NetworkHelper {
     }
   }
 
-  /// Obtener información de red del dispositivo
+  /// ↓ ACTUALIZADO: Usa DynamicIPDetector para información completa
   static Future<Map<String, dynamic>> getNetworkInfo() async {
     final info = <String, dynamic>{};
 
     try {
-      // Obtener interfaces de red
-      final interfaces = await NetworkInterface.list();
+      // Usar diagnóstico completo del DynamicIPDetector
+      final diagnostics = await DynamicIPDetector.getNetworkDiagnostics();
 
-      info['interfaces'] = interfaces.map((interface) => {
-        'name': interface.name,
-        'addresses': interface.addresses.map((addr) => addr.address).toList(),
-      }).toList();
+      info['detection_method'] = 'automatic';
+      info['network_interfaces'] = diagnostics['network_interfaces'];
+      info['all_candidates'] = diagnostics['all_candidates'];
+      info['gateway_ips'] = diagnostics['gateway_ips'];
 
-      // Detectar WSL2 si estamos en Windows
+      // Información específica de WSL2 si está en Windows
       if (Platform.isWindows) {
-        info['wsl2_ip'] = await getWSL2IP();
+        info['wsl2_ip'] = diagnostics['wsl2_ip'];
       }
+
+      info['whisper_server_detected'] = await detectWhisperServerIP();
 
     } catch (e) {
       info['error'] = e.toString();
     }
 
     return info;
+  }
+
+  /// ↓ NUEVO: Validar que una IP detectada sigue funcionando
+  static Future<bool> validateDetectedIP(String ip) async {
+    return await DynamicIPDetector.verifyWhisperService(ip, WHISPER_PORT);
+  }
+
+  /// ↓ NUEVO: Re-detectar IP si la actual falla
+  static Future<String?> redetectServerIP(String? currentIP) async {
+    print('🔄 Re-detectando servidor IP...');
+
+    // Si hay una IP actual, probarla primero
+    if (currentIP != null) {
+      print('🔍 Verificando IP actual: $currentIP');
+      final isStillValid = await validateDetectedIP(currentIP);
+      if (isStillValid) {
+        print('✅ IP actual sigue siendo válida: $currentIP');
+        return currentIP;
+      } else {
+        print('❌ IP actual ya no es válida: $currentIP');
+      }
+    }
+
+    // Ejecutar nueva detección
+    print('🔍 Ejecutando nueva detección automática...');
+    final newIP = await detectWhisperServerIP();
+
+    if (newIP != null) {
+      print('✅ Nueva IP detectada: $newIP');
+    } else {
+      print('❌ No se pudo re-detectar servidor');
+    }
+
+    return newIP;
+  }
+
+  /// ↓ NUEVO: Monitoreo continuo de IP (útil para reconexiones automáticas)
+  static Stream<String?> monitorServerIP({
+    String? currentIP,
+    Duration interval = const Duration(seconds: 30),
+  }) async* {
+    String? lastValidIP = currentIP;
+
+    while (true) {
+      await Future.delayed(interval);
+
+      try {
+        // Verificar IP actual
+        if (lastValidIP != null) {
+          final isValid = await validateDetectedIP(lastValidIP);
+          if (isValid) {
+            yield lastValidIP; // IP sigue siendo válida
+            continue;
+          }
+        }
+
+        // Re-detectar si es necesario
+        final newIP = await detectWhisperServerIP();
+        if (newIP != lastValidIP) {
+          lastValidIP = newIP;
+          yield newIP; // Nueva IP detectada o null si no se encontró
+        }
+
+      } catch (e) {
+        print('⚠️ Error en monitoreo de IP: $e');
+        yield null; // Error en la detección
+      }
+    }
+  }
+
+  /// ↓ NUEVO: Configuración de red para desarrollo (debugging)
+  static Map<String, dynamic> getDevelopmentNetworkConfig() {
+    return {
+      'whisper_port': WHISPER_PORT,
+      'rosbridge_port': ROSBRIDGE_PORT,
+      'ping_timeout': PING_TIMEOUT,
+      'http_timeout': HTTP_TIMEOUT,
+      'detection_method': 'automatic',
+      'platform': Platform.operatingSystem,
+      'supports_wsl2': Platform.isWindows,
+      'recommended_commands': {
+        'start_whisper': 'python3 ~/ros2_ws/src/tutorial_pkg/tutorial_pkg/whisper_fastapi_service.py',
+        'check_wsl2': 'wsl hostname -I',
+        'check_ports': 'netstat -an | grep :8000',
+      }
+    };
   }
 }

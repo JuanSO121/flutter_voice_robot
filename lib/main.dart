@@ -1,10 +1,11 @@
-// lib/main.dart - VERSIÓN CON ACCESIBILIDAD MEJORADA
+// lib/main.dart
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
 import 'package:flutter/services.dart';
 import 'services/enhanced_websocket_service.dart';
 import 'services/audio_service.dart';
 import 'services/tts_service.dart';
+import 'services/dynamic_ip_detector.dart';
 import 'models/voice_command.dart';
 import 'widgets/accessible_enhanced_voice_button.dart';
 import 'widgets/accessible_transcription_card.dart';
@@ -24,14 +25,12 @@ class MyApp extends StatelessWidget {
         primarySwatch: Colors.blue,
         visualDensity: VisualDensity.adaptivePlatformDensity,
         useMaterial3: true,
-        // Configuración de accesibilidad mejorada
-        textTheme: TextTheme(
+        textTheme: const TextTheme(
           bodyLarge: TextStyle(fontSize: 16, height: 1.4),
           bodyMedium: TextStyle(fontSize: 14, height: 1.4),
           titleLarge: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
           titleMedium: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
         ),
-        // Colores con contraste mejorado
         colorScheme: ColorScheme.fromSeed(
           seedColor: Colors.blue,
           brightness: Brightness.light,
@@ -48,7 +47,7 @@ class MyApp extends StatelessWidget {
         visualDensity: VisualDensity.adaptivePlatformDensity,
         useMaterial3: true,
         brightness: Brightness.dark,
-        textTheme: TextTheme(
+        textTheme: const TextTheme(
           bodyLarge: TextStyle(fontSize: 16, height: 1.4, color: Colors.white),
           bodyMedium: TextStyle(fontSize: 14, height: 1.4, color: Colors.white70),
           titleLarge: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white),
@@ -65,30 +64,29 @@ class MyApp extends StatelessWidget {
           onSurface: Colors.white,
         ),
       ),
-      themeMode: ThemeMode.system, // Respeta preferencias del sistema
+      themeMode: ThemeMode.system,
       home: AccessibleVoiceControlScreen(),
-      // Configuraciones de accesibilidad global
       builder: (context, child) {
         return MediaQuery(
           data: MediaQuery.of(context).copyWith(
-            // Asegurar tamaño mínimo de texto accesible
             textScaleFactor: MediaQuery.of(context).textScaleFactor.clamp(1.0, 2.0),
           ),
           child: child!,
         );
       },
-      // Eliminar banner de debug para usuarios con discapacidad visual
       debugShowCheckedModeBanner: false,
     );
   }
 }
 
 class AccessibleVoiceControlScreen extends StatefulWidget {
+  const AccessibleVoiceControlScreen({super.key});
+
   @override
-  _AccessibleVoiceControlScreenState createState() => _AccessibleVoiceControlScreenState();
+  AccessibleVoiceControlScreenState createState() => AccessibleVoiceControlScreenState();
 }
 
-class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScreen> {
+class AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScreen> {
   final EnhancedWebSocketService _webSocketService = EnhancedWebSocketService();
   final AudioService _audioService = AudioService();
   final TTSService _ttsService = TTSService();
@@ -118,13 +116,7 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
   double? _lastConfidence;
   double? _lastProcessingTime;
 
-  // Lista de IPs a probar
-  static const List<String> POSSIBLE_IPS = [
-    '192.168.1.5',
-    '172.17.192.179',
-    '172.17.192.1',
-    'localhost',
-  ];
+  // ↓ ELIMINADO: Lista estática de IPs - ahora se detecta dinámicamente
   static const int SERVER_PORT = 8000;
 
   @override
@@ -132,12 +124,11 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
     super.initState();
     _setupWebSocketCallbacks();
     _initializeServices();
-    _autoDiscoverAndConnect();
+    _autoDiscoverAndConnect(); // ← Ahora usa detección automática
 
-    // Configurar texto alternativo para lectores de pantalla
     WidgetsBinding.instance.addPostFrameCallback((_) {
       SemanticsService.announce(
-        'Aplicación de control de voz para robot iniciada. Conectando a servicios.',
+        'Aplicación de control de voz para robot iniciada. Detectando servidor automáticamente.',
         TextDirection.ltr,
       );
     });
@@ -150,15 +141,14 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
         _whisperAvailable = status['whisper_available'] ?? false;
       });
 
-      // Anunciar cambios de estado importantes
       if (status['status'] == 'connected') {
         SemanticsService.announce(
-          'Conectado al servidor. Servicios de voz disponibles.',
+          'Conectado al servidor en $_discoveredIP. Servicios de voz disponibles.',
           TextDirection.ltr,
         );
       } else if (status['status'] == 'connection_lost') {
         SemanticsService.announce(
-          'Se perdió la conexión con el servidor. Reintentando conexión.',
+          'Se perdió la conexión con el servidor. Detectando nueva IP automáticamente.',
           TextDirection.ltr,
         );
       }
@@ -172,7 +162,6 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
         }
       });
 
-      // Feedback háptico para confirmación
       if (result.success) {
         HapticFeedback.lightImpact();
       } else {
@@ -192,13 +181,11 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
   }
 
   Future<void> _initializeServices() async {
-    // Anunciar inicio de inicialización
     SemanticsService.announce(
       'Inicializando servicios de audio y voz.',
       TextDirection.ltr,
     );
 
-    // Inicializar servicio de audio
     try {
       await _audioService.initialize();
       setState(() {
@@ -215,7 +202,6 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
       );
     }
 
-    // Inicializar servicio TTS
     try {
       await _ttsService.initialize();
       setState(() {
@@ -234,62 +220,59 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
     }
   }
 
+  // ↓ MÉTODO COMPLETAMENTE REESCRITO con detección automática
   Future<void> _autoDiscoverAndConnect() async {
     setState(() {
       _isSearchingServer = true;
-      _connectionStatus = 'Buscando servidor Whisper...';
+      _connectionStatus = 'Detectando servidor automáticamente...';
     });
 
     SemanticsService.announce(
-      'Buscando servidor de reconocimiento de voz en la red.',
+      'Detectando servidor de reconocimiento de voz automáticamente. Esto puede tomar unos segundos.',
       TextDirection.ltr,
     );
 
     try {
-      for (String ip in POSSIBLE_IPS) {
-        if (_isConnected) break;
+      // ← NUEVO: Usar detección automática de IP
+      final detectedIP = await DynamicIPDetector.detectWhisperServerIP();
 
+      if (detectedIP != null) {
         setState(() {
-          _connectionStatus = 'Probando $ip...';
+          _connectionStatus = 'IP detectada: $detectedIP. Conectando...';
         });
 
-        try {
-          await _connectToServer(ip);
-          if (_isConnected) {
-            _showAccessibleSnackBar(
-                'Conectado exitosamente a $ip',
-                Colors.green,
-                'Éxito'
-            );
-            break;
-          }
-        } catch (e) {
-          print('Error conectando a $ip: $e');
+        await _connectToServer(detectedIP);
+
+        if (_isConnected) {
+          _showAccessibleSnackBar(
+              'Conectado automáticamente a $detectedIP',
+              Colors.green,
+              'Conexión exitosa'
+          );
         }
-
-        await Future.delayed(Duration(milliseconds: 500));
-      }
-
-      if (!_isConnected) {
+      } else {
         setState(() {
-          _connectionStatus = 'No se encontró servidor disponible';
+          _connectionStatus = 'No se detectó servidor Whisper automáticamente';
         });
+
         _showAccessibleSnackBar(
-            'No se encontró servidor Whisper. Use comandos de texto como alternativa.',
+            'No se encontró servidor Whisper. Verifique que esté ejecutándose.',
             Colors.red,
-            'Error de conexión'
+            'Servidor no encontrado'
         );
+
         _showAccessibleServerNotFoundDialog();
       }
 
     } catch (e) {
       setState(() {
-        _connectionStatus = 'Error buscando servidor';
+        _connectionStatus = 'Error en detección automática';
       });
+
       _showAccessibleSnackBar(
-          'Error en búsqueda de servidor: ${e.toString()}',
+          'Error detectando servidor: ${e.toString()}',
           Colors.red,
-          'Error crítico'
+          'Error de detección'
       );
     } finally {
       setState(() {
@@ -310,8 +293,8 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
       setState(() {
         _isConnected = true;
         _isConnecting = false;
-        _connectionStatus = 'Conectado';
-        _discoveredIP = serverIP;
+        _connectionStatus = 'Conectado a $serverIP';
+        _discoveredIP = serverIP; // ← Guarda la IP detectada
         _whisperAvailable = _webSocketService.whisperAvailable;
       });
 
@@ -319,14 +302,13 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
       setState(() {
         _isConnected = false;
         _isConnecting = false;
-        _connectionStatus = 'Error de conexión';
+        _connectionStatus = 'Error conectando a $serverIP';
       });
-      throw e;
+      rethrow;
     }
   }
 
-  // === MÉTODOS DE GRABACIÓN DE VOZ ACCESIBLES ===
-
+  // === MÉTODOS DE GRABACIÓN (sin cambios) ===
   Future<void> _startRecording() async {
     if (!_audioServiceReady) {
       _showAccessibleSnackBar(
@@ -352,10 +334,8 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
         _isRecording = true;
       });
 
-      // Feedback háptico distintivo para inicio
       HapticFeedback.mediumImpact();
 
-      // Anuncio inmediato
       SemanticsService.announce(
         'Grabación iniciada. Hable su comando ahora.',
         TextDirection.ltr,
@@ -379,7 +359,6 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
         _isRecording = false;
       });
 
-      // Feedback háptico distintivo para parada
       HapticFeedback.lightImpact();
 
       SemanticsService.announce(
@@ -441,7 +420,6 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
             Colors.green,
             'Éxito'
         );
-        // TTS automático para respuesta de voz
         if (_ttsEnabled && _ttsServiceReady && _lastResponse.isNotEmpty) {
           await _ttsService.speakSystemResponse(_lastResponse);
         }
@@ -466,8 +444,7 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
     }
   }
 
-  // === MÉTODOS DE COMANDOS DE TEXTO ACCESIBLES ===
-
+  // === MÉTODOS DE COMANDOS DE TEXTO - CORREGIDO ===
   Future<void> _sendTextCommand() async {
     final command = _textController.text.trim();
     if (command.isEmpty) {
@@ -476,7 +453,6 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
           Colors.orange,
           'Campo vacío'
       );
-      // Enfocar el campo de texto para facilitar corrección
       _textFieldFocusNode.requestFocus();
       return;
     }
@@ -514,13 +490,11 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
             'Éxito'
         );
 
-        // TTS opcional para comandos de texto
         if (_ttsEnabled && _ttsServiceReady && _lastResponse.isNotEmpty) {
-          await Future.delayed(Duration(milliseconds: 500));
+          await Future.delayed(const Duration(milliseconds: 500));
           await _ttsService.speakSystemResponse(_lastResponse);
         }
 
-        // Feedback háptico de confirmación
         HapticFeedback.lightImpact();
 
       } else {
@@ -529,7 +503,6 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
             Colors.red,
             'Error de envío'
         );
-        // Reenfoque para facilitar corrección
         _textFieldFocusNode.requestFocus();
       }
 
@@ -543,8 +516,6 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
       _textFieldFocusNode.requestFocus();
     }
   }
-
-  // === MÉTODOS TTS ACCESIBLES ===
 
   void _toggleTTS() {
     setState(() {
@@ -566,13 +537,10 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
     }
 
     _ttsService.setEnabled(_ttsEnabled);
-
-    // Anuncio inmediato del cambio
     SemanticsService.announce(message, TextDirection.ltr);
   }
 
-  // === MÉTODOS DE UI ACCESIBLES ===
-
+  // ↓ ACTUALIZADO: Dialog con información de detección automática
   void _showAccessibleServerNotFoundDialog() {
     showDialog(
       context: context,
@@ -581,55 +549,87 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
           title: Semantics(
             label: 'Diálogo de error: Servidor Whisper no encontrado',
             header: true,
-            child: Row(
+            child: const Row(
               children: [
                 Icon(Icons.search_off,
                     color: Colors.orange,
                     semanticLabel: 'Icono de búsqueda fallida'),
                 SizedBox(width: 8),
-                Expanded(child: Text('Servidor Whisper No Encontrado')),
+                Expanded(child: Text('Servidor Whisper No Detectado')),
               ],
             ),
           ),
           content: Semantics(
-            label: 'Información detallada sobre el error de conexión y pasos para solucionarlo',
+            label: 'Información sobre detección automática y solución de problemas',
             child: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('No se pudo encontrar el servidor Whisper FastAPI en la red.'),
-                  SizedBox(height: 16),
-                  Text('Verifique que:',
+                  Text('El sistema de detección automática no encontró el servidor Whisper.'),
+                  SizedBox(height: 12),
+                  Text('Verificaciones realizadas:',
                       style: TextStyle(fontWeight: FontWeight.bold)),
-                  Text('• El servicio Whisper esté ejecutándose'),
-                  Text('• WSL2 esté activo si usa Windows'),
-                  Text('• El puerto 8000 esté disponible'),
+                  Text('• Interfaces de red locales'),
+                  Text('• IP de WSL2 (si está en Windows)'),
+                  Text('• Gateway y rangos de red'),
+                  Text('• IPs comunes de desarrollo'),
+                  SizedBox(height: 12),
+                  Text('Verifique que:', style: TextStyle(fontWeight: FontWeight.bold)),
+                  Text('• El servicio Whisper esté ejecutándose en puerto 8000'),
+                  Text('• WSL2 esté activo (Windows)'),
                   Text('• No haya problemas de firewall'),
-                  SizedBox(height: 16),
-                  Text('Mientras tanto:',
-                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  SizedBox(height: 12),
                   Container(
                     padding: EdgeInsets.all(8),
                     decoration: BoxDecoration(
-                      color: Theme.of(context).brightness == Brightness.dark
-                          ? Colors.grey[800]
-                          : Colors.grey[200],
-                      borderRadius: BorderRadius.circular(4),
+                      color: Colors.grey[200],
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.grey.shade400),
                     ),
-                    child: Text(
-                      'Puede usar comandos de texto como alternativa completa',
-                      style: TextStyle(fontStyle: FontStyle.italic),
+                    child: const Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Comando para iniciar Whisper:',
+                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12),
+                        ),
+                        SizedBox(height: 4),
+                        Text(
+                          '1) En Windows: netsh interface portproxy add v4tov4 '
+                              'listenaddress=192.168.1.4 listenport=8000 '
+                              'connectaddress=172.17.192.179 connectport=8000',
+                          style: TextStyle(fontFamily: 'monospace', fontSize: 11),
+                        ),
+                        SizedBox(height: 4),
+                        Text(
+                          '2) En WSL2: python3 ~/ros2_ws/src/tutorial_pkg/tutorial_pkg/whisper_fastapi_service.py',
+                          style: TextStyle(fontFamily: 'monospace', fontSize: 11),
+                        ),
+                      ],
                     ),
                   ),
+
+                  SizedBox(height: 8),
+                  Text('Puede usar comandos de texto mientras tanto.',
+                      style: TextStyle(fontStyle: FontStyle.italic)),
                 ],
               ),
             ),
           ),
           actions: [
             Semantics(
-              label: 'Reintentar búsqueda del servidor',
-              hint: 'Presione para buscar nuevamente el servidor Whisper',
+              label: 'Ver diagnóstico de red detallado',
+              hint: 'Muestra información técnica de la detección de IP',
+              button: true,
+              child: TextButton(
+                onPressed: () => _showNetworkDiagnostics(),
+                child: Text('Diagnóstico'),
+              ),
+            ),
+            Semantics(
+              label: 'Reintentar detección automática',
+              hint: 'Vuelve a buscar el servidor automáticamente',
               button: true,
               child: TextButton(
                 onPressed: () {
@@ -640,8 +640,7 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
               ),
             ),
             Semantics(
-              label: 'Cerrar diálogo de error',
-              hint: 'Presione para cerrar esta ventana de información',
+              label: 'Cerrar diálogo',
               button: true,
               child: TextButton(
                 onPressed: () => Navigator.of(context).pop(),
@@ -654,8 +653,87 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
     );
   }
 
+  // ↓ NUEVO: Mostrar diagnóstico detallado de red
+  void _showNetworkDiagnostics() async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: Text('Obteniendo diagnóstico...'),
+        content: Center(child: CircularProgressIndicator()),
+      ),
+    );
+
+    try {
+      final diagnostics = await DynamicIPDetector.getNetworkDiagnostics();
+      Navigator.of(context).pop(); // Cerrar loading
+
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text('Diagnóstico de Red'),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('IPs Candidatas Encontradas:',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
+                if (diagnostics['all_candidates'] != null)
+                  ...((diagnostics['all_candidates'] as List).map((ip) =>
+                      Padding(
+                        padding: EdgeInsets.only(left: 8),
+                        child: Text('• $ip', style: TextStyle(fontSize: 12)),
+                      )
+                  )),
+                SizedBox(height: 12),
+                if (diagnostics['wsl2_ip'] != null) ...[
+                  Text('WSL2 IP Detectada:',
+                      style: TextStyle(fontWeight: FontWeight.bold)),
+                  Text('${diagnostics['wsl2_ip']}'),
+                  SizedBox(height: 12),
+                ],
+                Text('Interfaces de Red:',
+                    style: TextStyle(fontWeight: FontWeight.bold)),
+                if (diagnostics['network_interfaces'] != null)
+                  ...((diagnostics['network_interfaces'] as List).map((interface) =>
+                      Padding(
+                        padding: EdgeInsets.only(left: 8),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('${interface['name']}:',
+                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
+                            ...(interface['addresses'] as List).map((addr) =>
+                                Text('  ${addr['address']}',
+                                    style: TextStyle(fontSize: 11))
+                            ),
+                          ],
+                        ),
+                      )
+                  )),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: Text('Cerrar'),
+            ),
+          ],
+        ),
+      );
+    } catch (e) {
+      Navigator.of(context).pop(); // Cerrar loading
+      _showAccessibleSnackBar(
+          'Error obteniendo diagnóstico: $e',
+          Colors.red,
+          'Error'
+      );
+    }
+  }
+
   void _showAccessibleSnackBar(String message, Color color, String category) {
-    // Anuncio inmediato para lectores de pantalla
     SemanticsService.announce(
       '$category: $message',
       TextDirection.ltr,
@@ -709,7 +787,7 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
       child: Scaffold(
         appBar: AppBar(
           title: Semantics(
-            label: 'Título de la aplicación: Control de Voz para Robot 2.0',
+            label: 'Título: Control de Voz para Robot con detección automática',
             header: true,
             child: Row(
               children: [
@@ -733,7 +811,6 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
           _isSearchingServer ? Colors.orange : Colors.red,
           elevation: 4,
           actions: [
-            // Botón para alternar TTS con mejor accesibilidad
             Semantics(
               label: _ttsEnabled
                   ? 'Desactivar síntesis de voz'
@@ -763,7 +840,6 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // === ESTADO DE CONEXIÓN ACCESIBLE ===
                 AccessibleConnectionStatusCard(
                   isConnected: _isConnected,
                   connectionStatus: _connectionStatus,
@@ -775,13 +851,12 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
                     'audio': _audioServiceReady,
                     'tts': _ttsServiceReady,
                   },
-                  onReconnect: _autoDiscoverAndConnect,
+                  onReconnect: _autoDiscoverAndConnect, // ← Usa detección automática
                   onRefreshStatus: () => _webSocketService.requestStatus(),
                 ),
 
                 SizedBox(height: 16),
 
-                // === BOTÓN DE VOZ ACCESIBLE ===
                 if (_isConnected)
                   Semantics(
                     label: 'Sección de control de voz',
@@ -798,17 +873,14 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
 
                 SizedBox(height: 20),
 
-                // === CAMPO DE TEXTO ACCESIBLE ===
                 _buildAccessibleTextCommandCard(),
 
                 SizedBox(height: 16),
 
-                // === COMANDOS RÁPIDOS ACCESIBLES ===
                 if (_isConnected) _buildAccessibleQuickCommandsCard(),
 
                 SizedBox(height: 16),
 
-                // === RESULTADO DE TRANSCRIPCIÓN ACCESIBLE ===
                 if (_lastTranscription.isNotEmpty || _lastResponse.isNotEmpty)
                   AccessibleTranscriptionCard(
                     transcription: _lastTranscription,
@@ -836,28 +908,6 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Semantics(
-                label: 'Título de sección: Enviar comando de texto',
-                header: true,
-                child: Row(
-                  children: [
-                    Icon(Icons.keyboard,
-                        color: Colors.blue[600],
-                        semanticLabel: 'Icono de teclado'),
-                    SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        'Enviar Comando de Texto',
-                        style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              SizedBox(height: 12),
-              Semantics(
                 label: 'Campo de texto para escribir comandos al robot',
                 textField: true,
                 child: TextField(
@@ -874,7 +924,7 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
                     ),
                     suffixIcon: Semantics(
                       label: 'Enviar comando de texto',
-                      hint: 'Presione para enviar el comando escrito al robot',
+                      hint: 'Presione para enviar el comando al robot',
                       button: true,
                       child: IconButton(
                         icon: Icon(Icons.send,
@@ -888,7 +938,6 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
                   onSubmitted: _isConnected ? (_) => _sendTextCommand() : null,
                   textInputAction: TextInputAction.send,
                   keyboardType: TextInputType.text,
-                  // Mejoras de accesibilidad para el campo de texto
                   style: TextStyle(fontSize: 16),
                   maxLines: null,
                   minLines: 1,
@@ -926,7 +975,7 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
     ];
 
     return Semantics(
-      label: 'Sección de comandos rápidos predefinidos',
+      label: 'Sección de comandos rápidos',
       child: Card(
         child: Padding(
           padding: EdgeInsets.all(16.0),
@@ -934,7 +983,7 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Semantics(
-                label: 'Título de sección: Comandos rápidos',
+                label: 'Título: Comandos rápidos',
                 header: true,
                 child: Row(
                   children: [
@@ -956,7 +1005,7 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
               ),
               SizedBox(height: 12),
               Semantics(
-                label: 'Lista de ${quickCommands.length} comandos predefinidos disponibles',
+                label: 'Lista de comandos predefinidos',
                 child: Wrap(
                   spacing: 8,
                   runSpacing: 8,
@@ -975,7 +1024,7 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
   Widget _buildAccessibleQuickCommand(String command) {
     return Semantics(
       label: 'Comando rápido: $command',
-      hint: 'Presione para enviar automáticamente este comando al robot',
+      hint: 'Presione para enviar este comando al robot',
       button: true,
       child: ElevatedButton(
         onPressed: () {
@@ -990,7 +1039,6 @@ class _AccessibleVoiceControlScreenState extends State<AccessibleVoiceControlScr
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(8),
           ),
-          // Tamaño mínimo para accesibilidad táctil
           minimumSize: Size(88, 36),
         ),
       ),
